@@ -1,0 +1,30 @@
+# Kubernetes Namespace and ConfigMaps
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: investment-platform
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: investment-config
+  namespace: investment-platform
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  PDPL_ENABLED: "true"
+  ENABLE_RAG_SEARCH: "true"
+  ENABLE_BRIEFING_GENERATION: "true"
+  ENABLE_PORTFOLIO_OPTIMIZATION: "true"
+  ENABLE_RISK_MONITORING: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: investment-secrets
+  namespace: investment-platform
+type: Opaque
+stringData:
+  database-url: "postgresql://investment_user:investment_password@postgres:5432/investment_db"
+  jwt-secret: "your_super_secret_jwt_key_change_in_production_123456"
+  keycloak-client-secret: "changeme"

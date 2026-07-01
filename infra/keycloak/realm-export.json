@@ -1,0 +1,140 @@
+# Keycloak Realm Configuration for Investment Platform
+# Import via: /admin/realms/import
+
+{
+  "realm": "investment_platform",
+  "enabled": true,
+  "displayName": "Investment Intelligence Platform",
+  "displayNameHtml": "<b>Investment Intelligence Platform</b>",
+  "duplicateEmailsAllowed": false,
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "requiresHttps": false,
+  "accessTokenLifespan": 86400,
+  "ssoSessionIdleTimeout": 86400,
+  "ssoSessionMaxLifespan": 604800,
+  "offlineSessionIdleTimeout": 2592000,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 5184000,
+  "defaultSignatureAlgorithm": "RS256",
+  "clients": [
+    {
+      "clientId": "api_gateway",
+      "name": "API Gateway",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "clientSecret": "changeme",
+      "redirectUris": ["http://localhost:8000/*", "http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:8000", "http://localhost:3000"],
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "bearerOnlyClient": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "email",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "user.attribute": "email",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "email"
+          }
+        },
+        {
+          "name": "roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "userinfo.token.claim": "true",
+            "access.token.claim": "true",
+            "multivalued": "true",
+            "claim.name": "roles"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "analyst_portal",
+      "name": "Analyst Portal",
+      "enabled": true,
+      "publicClient": true,
+      "redirectUris": ["http://localhost:3000/*"],
+      "webOrigins": ["http://localhost:3000"],
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": true,
+      "directAccessGrantsEnabled": true
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "admin",
+        "description": "Platform administrator",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "analyst",
+        "description": "Investment analyst",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "investor",
+        "description": "Investor/LP",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "compliance_officer",
+        "description": "Compliance and governance officer",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "users": [
+    {
+      "username": "admin",
+      "email": "admin@investment.local",
+      "firstName": "Admin",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "changeme",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["admin"],
+      "clientRoles": {
+        "realm-management": ["manage-realm", "manage-users"]
+      }
+    },
+    {
+      "username": "analyst",
+      "email": "analyst@investment.local",
+      "firstName": "Test",
+      "lastName": "Analyst",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "changeme",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["analyst"]
+    }
+  ]
+}

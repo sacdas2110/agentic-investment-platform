@@ -1,0 +1,452 @@
+version: '3.9'
+
+services:
+  # ============================================================
+  # Database
+  # ============================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: investment-postgres
+    environment:
+      POSTGRES_USER: investment_user
+      POSTGRES_PASSWORD: investment_password
+      POSTGRES_DB: investment_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U investment_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Redis Cache
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: investment-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Qdrant Vector Database
+  # ============================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: investment-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - ./qdrant/config.yaml:/qdrant/config/config.yaml:ro
+    environment:
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-changeme}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Kafka Message Bus
+  # ============================================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: investment-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - investment-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: investment-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server kafka:9092 | grep ApiVersion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Keycloak (Authentication)
+  # ============================================================
+  keycloak:
+    image: quay.io/keycloak/keycloak:22.0.0
+    container_name: investment-keycloak
+    environment:
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak_db
+      KC_DB_USERNAME: investment_user
+      KC_DB_PASSWORD: investment_password
+      KC_HOSTNAME: keycloak
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: start-dev
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/import/realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # MinIO (S3-compatible Object Storage)
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: investment-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Ollama (Local LLM)
+  # ============================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: investment-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # Metabase (Analytics & Dashboards)
+  # ============================================================
+  metabase:
+    image: metabase/metabase:latest
+    container_name: investment-metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase_db
+      MB_DB_PORT: 5432
+      MB_DB_USER: investment_user
+      MB_DB_PASS: investment_password
+      MB_DB_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    networks:
+      - investment-network
+
+  # ============================================================
+  # FastAPI Microservices
+  # ============================================================
+
+  api-gateway:
+    build:
+      context: ../services/api-gateway
+      dockerfile: Dockerfile
+    container_name: investment-api-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_URL: http://qdrant:6333
+      KEYCLOAK_URL: http://keycloak:8080
+      API_GATEWAY_LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ../services/api-gateway:/app
+    networks:
+      - investment-network
+
+  ingestion-agent:
+    build:
+      context: ../services/ingestion-agent
+      dockerfile: Dockerfile
+    container_name: investment-ingestion-agent
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_URL: http://qdrant:6333
+      S3_ENDPOINT: http://minio:9000
+      INGESTION_AGENT_PORT: 8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../services/ingestion-agent:/app
+    networks:
+      - investment-network
+
+  document-intel-agent:
+    build:
+      context: ../services/document-intel-agent
+      dockerfile: Dockerfile
+    container_name: investment-document-intel-agent
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DOCUMENT_INTEL_AGENT_PORT: 8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../services/document-intel-agent:/app
+    networks:
+      - investment-network
+
+  research-rag-agent:
+    build:
+      context: ../services/research-rag-agent
+      dockerfile: Dockerfile
+    container_name: investment-research-rag-agent
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_URL: http://qdrant:6333
+      RESEARCH_RAG_AGENT_PORT: 8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ../services/research-rag-agent:/app
+    networks:
+      - investment-network
+
+  investment-scorer:
+    build:
+      context: ../services/investment-scorer
+      dockerfile: Dockerfile
+    container_name: investment-scorer
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      INVESTMENT_SCORER_PORT: 8004
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../services/investment-scorer:/app
+    networks:
+      - investment-network
+
+  portfolio-analytics-agent:
+    build:
+      context: ../services/portfolio-analytics-agent
+      dockerfile: Dockerfile
+    container_name: investment-portfolio-analytics-agent
+    ports:
+      - "8005:8005"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      PORTFOLIO_ANALYTICS_PORT: 8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../services/portfolio-analytics-agent:/app
+    networks:
+      - investment-network
+
+  risk-monitor-agent:
+    build:
+      context: ../services/risk-monitor-agent
+      dockerfile: Dockerfile
+    container_name: investment-risk-monitor-agent
+    ports:
+      - "8006:8006"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      RISK_MONITOR_AGENT_PORT: 8006
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ../services/risk-monitor-agent:/app
+    networks:
+      - investment-network
+
+  briefing-generator:
+    build:
+      context: ../services/briefing-generator
+      dockerfile: Dockerfile
+    container_name: investment-briefing-generator
+    ports:
+      - "8007:8007"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      LLM_HOST: http://ollama:11434
+      S3_ENDPOINT: http://minio:9000
+      BRIEFING_GENERATOR_PORT: 8007
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ../services/briefing-generator:/app
+    networks:
+      - investment-network
+
+  compliance-governance:
+    build:
+      context: ../services/compliance-governance
+      dockerfile: Dockerfile
+    container_name: investment-compliance-governance
+    ports:
+      - "8008:8008"
+    environment:
+      DATABASE_URL: postgresql://investment_user:investment_password@postgres:5432/investment_db
+      REDIS_URL: redis://redis:6379/0
+      KEYCLOAK_URL: http://keycloak:8080
+      COMPLIANCE_GOVERNANCE_PORT: 8008
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../services/compliance-governance:/app
+    networks:
+      - investment-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  zookeeper_data:
+  kafka_data:
+  minio_data:
+  ollama_data:
+
+networks:
+  investment-network:
+    driver: bridge
